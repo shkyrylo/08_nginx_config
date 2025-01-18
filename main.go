@@ -7,22 +7,45 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
-const CacheDir = "/var/cache/nginx/assets"
+const (
+	CacheDir  = "/var/cache/nginx/assets"
+	AssetsDir = "./assets"
+)
+
+var validFileName = regexp.MustCompile(`^[a-zA-Z0-9_-]+\.(jpg|jpeg|png|webp|gif)$`)
+
+func validateFileName(basePath, fileName string) (string, error) {
+	if !validFileName.MatchString(fileName) {
+		return "", fmt.Errorf("invalid file name")
+	}
+
+	fullPath := filepath.Join(basePath, fileName)
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("file not found: %s", fileName)
+	}
+
+	return fullPath, nil
+}
 
 func assetsHandler(w http.ResponseWriter, r *http.Request) {
-	assetPath := strings.TrimPrefix(r.URL.Path, "/assets/")
-	if assetPath == "" {
-		http.Error(w, "Asset not specified", http.StatusBadRequest)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	fullPath := filepath.Join("./assets", assetPath)
+	assetPath := strings.TrimPrefix(r.URL.Path, "/assets/")
+	if assetPath == "" {
+		http.Error(w, "File name not specified", http.StatusBadRequest)
+		return
+	}
 
-	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-		http.Error(w, "Asset not found", http.StatusNotFound)
+	fullPath, err := validateFileName(AssetsDir, assetPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -35,22 +58,26 @@ func clearCacheHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, ok := r.URL.Query()["key"]
-	if !ok || len(keys[0]) < 1 {
-		http.Error(w, "Missing 'key' parameter", http.StatusBadRequest)
+	assetPath := strings.TrimPrefix(r.URL.Path, "/cache/")
+	if assetPath == "" {
+		http.Error(w, "File name not specified", http.StatusBadRequest)
 		return
 	}
-	cacheKey := keys[0]
 
-	hash := fmt.Sprintf("%x", md5.Sum([]byte(cacheKey)))
+	_, err := validateFileName(AssetsDir, assetPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	hash := fmt.Sprintf("%x", md5.Sum([]byte("/assets/"+assetPath)))
 	cacheFile := filepath.Join(CacheDir, hash)
 
-	fmt.Println("Removing cache file:", cacheFile)
-
 	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		http.Error(w, fmt.Sprintf("Cache file not found for key: %s", cacheKey), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("Cache file not found for file: %s", assetPath), http.StatusNotFound)
 		return
 	}
+
 	if err := os.Remove(cacheFile); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to remove cache file: %s", err.Error()), http.StatusInternalServerError)
 		return
@@ -62,7 +89,7 @@ func clearCacheHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/assets/", assetsHandler)
-	http.HandleFunc("/cache", clearCacheHandler)
+	http.HandleFunc("/cache/", clearCacheHandler)
 
 	log.Println("Go app is running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
